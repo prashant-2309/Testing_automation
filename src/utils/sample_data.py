@@ -15,7 +15,8 @@ sys.path.insert(0, str(project_root))
 from dotenv import load_dotenv
 load_dotenv()
 
-API_BASE = f"http://{os.getenv('API_HOST', 'localhost')}:{os.getenv('API_PORT', '5000')}/api/v1"
+# Fixed API base URL - use localhost instead of 0.0.0.0
+API_BASE = f"http://localhost:{os.getenv('API_PORT', '5000')}/api/v1"
 
 class SampleDataGenerator:
     def __init__(self):
@@ -81,17 +82,24 @@ class SampleDataGenerator:
     def test_api_connection(self):
         """Test if API is accessible"""
         try:
-            response = requests.get(f"{API_BASE.replace('/api/v1', '')}/health", timeout=5)
+            health_url = API_BASE.replace('/api/v1', '/health')
+            print(f"Testing connection to: {health_url}")
+            
+            response = requests.get(health_url, timeout=5)
             if response.status_code == 200:
                 health_data = response.json()
                 print(f"✓ API is healthy: {health_data}")
                 return True
             else:
                 print(f"✗ API health check failed: {response.status_code}")
+                print(f"Response: {response.text}")
                 return False
         except requests.exceptions.RequestException as e:
             print(f"✗ Cannot connect to API: {e}")
-            print(f"Make sure the API is running at: {API_BASE}")
+            print(f"Make sure the API is running and try:")
+            print(f"  1. Check if server is running: http://localhost:5000/health")
+            print(f"  2. If server shows 0.0.0.0, use localhost in browser")
+            print(f"  3. Try: curl http://localhost:5000/health")
             return False
 
     def create_payment(self, payment_data):
@@ -140,7 +148,11 @@ class SampleDataGenerator:
     def generate_sample_data(self, num_payments=20):
         """Generate comprehensive sample data"""
         if not self.test_api_connection():
-            return []
+            return {
+                'created': [],
+                'processed': [],
+                'refunded': []
+            }
 
         print(f"\nGenerating {num_payments} sample payments...")
         created_payments = []
@@ -196,6 +208,17 @@ class SampleDataGenerator:
         """Create specific test scenarios for comprehensive testing"""
         print("\nCreating specific test scenarios...")
         scenarios = []
+
+        # Only proceed if API is accessible
+        health_url = API_BASE.replace('/api/v1', '/health')
+        try:
+            response = requests.get(health_url, timeout=5)
+            if response.status_code != 200:
+                print("API not accessible, skipping scenarios")
+                return []
+        except:
+            print("API not accessible, skipping scenarios")
+            return []
 
         # Scenario 1: Large payment
         large_payment = {
@@ -285,7 +308,8 @@ class SampleDataGenerator:
                 print(f"  {currency}: {currency_counts[currency]} payments, Total: {total_amounts[currency]:.2f}")
 
         print("\nAPI Endpoints to test:")
-        print(f"  Health Check: {API_BASE.replace('/api/v1', '')}/health")
+        health_url = API_BASE.replace('/api/v1', '/health')
+        print(f"  Health Check: {health_url}")
         print(f"  List Payments: {API_BASE}/payments")
         print(f"  Payment Details: {API_BASE}/payments/{{payment_id}}")
         print(f"  Payment Transactions: {API_BASE}/payments/{{payment_id}}/transactions")
@@ -309,8 +333,15 @@ def main():
     
     print(f"\nScenario Results: {len(scenarios)} scenarios created")
     
-    print("\n✓ Sample data generation complete!")
-    print("\nYou can now test the API endpoints or run the test suite.")
+    if results['created']:
+        print("\n✓ Sample data generation complete!")
+        print("\nYou can now test the API endpoints or run the test suite.")
+    else:
+        print("\n✗ No data was created. Please check API connection.")
+        print("\nTroubleshooting steps:")
+        print("1. Make sure the server is running: python run_server.py")
+        print("2. Test manually: curl http://localhost:5000/health")
+        print("3. Check .env file for correct port configuration")
 
 
 if __name__ == "__main__":

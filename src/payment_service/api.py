@@ -1,10 +1,17 @@
+import os
+import sys
+from pathlib import Path
+
+# Add project root to Python path
+project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root))
+
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from flask_migrate import Migrate
 from src.models.payment_models import db, Payment, Refund, Transaction
 from src.payment_service.payment_processor import PaymentProcessor
 from config.config import config
-import os
 
 def create_app(config_name=None):
     app = Flask(__name__)
@@ -169,5 +176,13 @@ def create_app(config_name=None):
     return app
 
 if __name__ == '__main__':
+    from dotenv import load_dotenv
+    load_dotenv()
+    
     app = create_app()
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    host = os.getenv('API_HOST', '0.0.0.0')
+    port = int(os.getenv('API_PORT', 5000))
+    debug = os.getenv('DEBUG', 'True').lower() == 'true'
+    
+    print(f"Starting Payment API on {host}:{port}")
+    app.run(debug=debug, host=host, port=port)
