@@ -1,8 +1,11 @@
+import decimal
 from decimal import Decimal
 import random
 import time
 from datetime import datetime
 from src.models.payment_models import db, Payment, Refund, Transaction, PaymentStatus, PaymentMethod
+from src.banking_service.banking_processor import BankingService
+from src.models.banking_models import BankAccount
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy import func
 
@@ -11,6 +14,7 @@ class PaymentProcessor:
         self.supported_currencies = ['USD', 'EUR', 'GBP', 'JPY', 'CAD']
         self.max_amount = Decimal('10000.00')
         self.min_amount = Decimal('0.01')
+        self.banking_service = BankingService()
     
     def validate_payment_request(self, payment_data):
         """Validate payment request data"""
@@ -47,22 +51,54 @@ class PaymentProcessor:
         
         return errors
     
+    def _find_customer_bank_account(self, customer_id, currency='USD'):
+        """Find active bank account for customer"""
+        try:
+            accounts_result = self.banking_service.find_customer_accounts(customer_id)
+            if not accounts_result['success']:
+                return None
+            
+            # Find active account with matching currency
+            for account in accounts_result['accounts']:
+                if (account['status'] == 'active' and 
+                    account['currency'] == currency and
+                    account['account_type'] in ['checking', 'savings']):
+                    return account
+            
+            return None
+        except Exception:
+            return None
+    
     def create_payment(self, payment_data):
-        """Create a new payment"""
+        """Create a new payment with bank account validation"""
         validation_errors = self.validate_payment_request(payment_data)
         if validation_errors:
             return {'success': False, 'errors': validation_errors}
         
         try:
+            # Find customer's bank account
+            currency = payment_data.get('currency', 'USD').upper()
+            bank_account = self._find_customer_bank_account(
+                payment_data['customer_id'], 
+                currency
+            )
+            
+            if not bank_account:
+                return {
+                    'success': False, 
+                    'errors': [f'No active bank account found for customer {payment_data["customer_id"]} in {currency}']
+                }
+            
             payment = Payment(
                 merchant_id=payment_data['merchant_id'],
                 customer_id=payment_data['customer_id'],
                 amount=Decimal(str(payment_data['amount'])),
-                currency=payment_data.get('currency', 'USD').upper(),
+                currency=currency,
                 payment_method=PaymentMethod(payment_data['payment_method']),
                 description=payment_data.get('description', ''),
                 card_last_four=payment_data.get('card_last_four'),
-                card_type=payment_data.get('card_type')
+                card_type=payment_data.get('card_type'),
+                bank_account_id=bank_account['id']  # Link to bank account
             )
             
             db.session.add(payment)
@@ -78,7 +114,7 @@ class PaymentProcessor:
             return {'success': False, 'errors': [str(e)]}
     
     def process_payment(self, payment_id):
-        """Process a pending payment"""
+        """Process a pending payment with bank account debit"""
         try:
             payment = Payment.query.get(payment_id)
             if not payment:
@@ -87,21 +123,46 @@ class PaymentProcessor:
             if payment.status != PaymentStatus.PENDING:
                 return {'success': False, 'errors': [f'Payment is not in pending status. Current status: {payment.status.value}']}
             
-            # Simulate payment processing
+            # Update payment status to processing
             payment.status = PaymentStatus.PROCESSING
             db.session.commit()
             
-            # Simulate gateway processing time
+            # Simulate processing time
             time.sleep(0.1)
             
-            # Simulate success/failure (90% success rate for demo)
+            # Try to debit the bank account if bank_account_id exists
+            if hasattr(payment, 'bank_account_id') and payment.bank_account_id:
+                debit_result = self.banking_service.debit_account(
+                    payment.bank_account_id,
+                    payment.amount,
+                    reference_id=payment.id,
+                    reference_type='payment',
+                    description=f'Payment to {payment.merchant_id}'
+                )
+                
+                if not debit_result['success']:
+                    # Bank debit failed
+                    payment.status = PaymentStatus.FAILED
+                    
+                    transaction = Transaction(
+                        payment_id=payment.id,
+                        transaction_type='charge',
+                        amount=payment.amount,
+                        gateway_response=f"BANK_DECLINED: {', '.join(debit_result['errors'])}",
+                        gateway_transaction_id=f"bank_fail_{random.randint(100000, 999999)}"
+                    )
+                    db.session.add(transaction)
+                    db.session.commit()
+                    
+                    return {'success': True, 'payment': payment.to_dict()}
+            
+            # Simulate gateway processing (90% success rate)
             success = random.random() > 0.1
             
             if success:
                 payment.status = PaymentStatus.COMPLETED
                 payment.processed_at = datetime.utcnow()
                 
-                # Create transaction record
                 transaction = Transaction(
                     payment_id=payment.id,
                     transaction_type='charge',
@@ -113,12 +174,22 @@ class PaymentProcessor:
             else:
                 payment.status = PaymentStatus.FAILED
                 
+                # If we debited the bank account, we need to credit it back
+                if hasattr(payment, 'bank_account_id') and payment.bank_account_id:
+                    self.banking_service.credit_account(
+                        payment.bank_account_id,
+                        payment.amount,
+                        reference_id=payment.id,
+                        reference_type='reversal',
+                        description=f'Payment reversal for failed transaction {payment.id}'
+                    )
+                
                 transaction = Transaction(
                     payment_id=payment.id,
                     transaction_type='charge',
                     amount=payment.amount,
-                    gateway_response='DECLINED',
-                    gateway_transaction_id=f"gw_{random.randint(100000, 999999)}"
+                    gateway_response='GATEWAY_DECLINED',
+                    gateway_transaction_id=f"gw_fail_{random.randint(100000, 999999)}"
                 )
                 db.session.add(transaction)
             
@@ -133,7 +204,7 @@ class PaymentProcessor:
             return {'success': False, 'errors': [str(e)]}
     
     def refund_payment(self, payment_id, refund_data):
-        """Process a refund for a payment"""
+        """Process a refund for a payment with bank account credit"""
         try:
             payment = Payment.query.get(payment_id)
             if not payment:
@@ -163,6 +234,20 @@ class PaymentProcessor:
             )
             
             db.session.add(refund)
+            
+            # Credit the bank account if bank_account_id exists
+            if hasattr(payment, 'bank_account_id') and payment.bank_account_id:
+                credit_result = self.banking_service.credit_account(
+                    payment.bank_account_id,
+                    refund_amount,
+                    reference_id=refund.id,
+                    reference_type='refund',
+                    description=f'Refund from {payment.merchant_id}'
+                )
+                
+                if not credit_result['success']:
+                    db.session.rollback()
+                    return {'success': False, 'errors': ['Failed to credit bank account']}
             
             # Update payment status
             new_total_refunded = total_refunded + refund_amount
@@ -218,3 +303,50 @@ class PaymentProcessor:
         
         except Exception as e:
             return {'success': False, 'errors': [str(e)]}
+
+    def validate_payment_request(self, payment_data):
+        errors = []
+        
+        # Amount validation
+        try:
+            amount = Decimal(str(payment_data.get('amount', 0)))
+            currency = payment_data.get('currency', 'USD').upper()
+            
+            # Different validation for JPY (no decimals, higher amounts)
+            if currency == 'JPY':
+                min_amount = Decimal('1')
+                max_amount = Decimal('1000000')  # 1 million JPY (~$7,500)
+            else:
+                min_amount = self.min_amount
+                max_amount = self.max_amount
+                
+            if amount < min_amount:
+                errors.append(f"Amount must be at least {min_amount} {currency}")
+            if amount > max_amount:
+                errors.append(f"Amount cannot exceed {max_amount} {currency}")
+                
+        except (ValueError, TypeError, decimal.InvalidOperation):
+            errors.append("Invalid amount format")
+        
+        # Currency validation
+        currency = payment_data.get('currency', 'USD').upper()
+        if currency not in self.supported_currencies:
+            errors.append(f"Currency {currency} not supported. Supported: {', '.join(self.supported_currencies)}")
+        
+        # Required fields
+        required_fields = ['merchant_id', 'customer_id', 'payment_method']
+        for field in required_fields:
+            if not payment_data.get(field):
+                errors.append(f"Missing required field: {field}")
+        
+        # Payment method validation
+        payment_method = payment_data.get('payment_method')
+        try:
+            PaymentMethod(payment_method)
+        except ValueError:
+            valid_methods = [method.value for method in PaymentMethod]
+            errors.append(f"Invalid payment method: {payment_method}. Valid methods: {', '.join(valid_methods)}")
+        
+        return errors
+    """Validate payment request data"""
+        

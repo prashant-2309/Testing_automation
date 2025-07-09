@@ -12,6 +12,7 @@ from flask_migrate import Migrate
 from src.models.payment_models import db, Payment, Refund, Transaction
 from src.payment_service.payment_processor import PaymentProcessor
 from config.config import config
+from src.banking_service.banking_processor import BankingService
 
 def create_app(config_name=None):
     app = Flask(__name__)
@@ -35,6 +36,7 @@ def create_app(config_name=None):
     
     # Initialize payment processor
     payment_processor = PaymentProcessor()
+    banking_service = BankingService()
     
     @app.route('/health', methods=['GET'])
     def health_check():
@@ -160,6 +162,109 @@ def create_app(config_name=None):
                 'offset': offset,
                 'limit': limit
             }), 200
+        
+        except Exception as e:
+            return jsonify({'success': False, 'errors': [str(e)]}), 500
+
+    @app.route('/api/v1/banking/accounts', methods=['POST'])
+    def create_bank_account():
+        """Create a new bank account"""
+        try:
+            data = request.get_json()
+            if not data:
+                return jsonify({'success': False, 'errors': ['No data provided']}), 400
+            
+            result = banking_service.create_bank_account(data)
+            
+            if result['success']:
+                return jsonify(result), 201
+            else:
+                return jsonify(result), 400
+        
+        except Exception as e:
+            return jsonify({'success': False, 'errors': [str(e)]}), 500
+    
+    @app.route('/api/v1/banking/accounts/<account_id>', methods=['GET'])
+    def get_bank_account(account_id):
+        """Get bank account details"""
+        try:
+            from src.models.banking_models import BankAccount
+            account = BankAccount.query.get(account_id)
+            
+            if not account:
+                return jsonify({'success': False, 'errors': ['Account not found']}), 404
+            
+            return jsonify({
+                'success': True,
+                'account': account.to_dict()
+            }), 200
+        
+        except Exception as e:
+            return jsonify({'success': False, 'errors': [str(e)]}), 500
+    
+    @app.route('/api/v1/banking/accounts/<account_id>/balance', methods=['GET'])
+    def get_account_balance(account_id):
+        """Get account balance"""
+        try:
+            result = banking_service.get_account_balance(account_id)
+            
+            if result['success']:
+                return jsonify(result), 200
+            else:
+                return jsonify(result), 404
+        
+        except Exception as e:
+            return jsonify({'success': False, 'errors': [str(e)]}), 500
+    
+    @app.route('/api/v1/banking/accounts/<account_id>/transactions', methods=['GET'])
+    def get_account_transactions(account_id):
+        """Get account transaction history"""
+        try:
+            limit = min(int(request.args.get('limit', 50)), 100)
+            offset = int(request.args.get('offset', 0))
+            
+            result = banking_service.get_account_transactions(account_id, limit, offset)
+            
+            if result['success']:
+                return jsonify(result), 200
+            else:
+                return jsonify(result), 404
+        
+        except Exception as e:
+            return jsonify({'success': False, 'errors': [str(e)]}), 500
+    
+    @app.route('/api/v1/banking/accounts/<account_id>/status', methods=['PUT'])
+    def update_account_status(account_id):
+        """Update account status (freeze/activate)"""
+        try:
+            data = request.get_json()
+            if not data or 'status' not in data:
+                return jsonify({'success': False, 'errors': ['Status is required']}), 400
+            
+            result = banking_service.update_account_status(
+                account_id,
+                data['status'],
+                data.get('reason')
+            )
+            
+            if result['success']:
+                return jsonify(result), 200
+            else:
+                return jsonify(result), 400
+        
+        except Exception as e:
+            return jsonify({'success': False, 'errors': [str(e)]}), 500
+    
+    @app.route('/api/v1/banking/customers/<customer_id>/accounts', methods=['GET'])
+    def get_customer_accounts(customer_id):
+        """Get all accounts for a customer"""
+        try:
+            result = banking_service.find_customer_accounts(customer_id)
+            
+            if result['success']:
+                return jsonify(result), 200
+            else:
+                return jsonify(result), 404
         
         except Exception as e:
             return jsonify({'success': False, 'errors': [str(e)]}), 500

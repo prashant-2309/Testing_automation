@@ -37,6 +37,7 @@ class Payment(db.Model):
     # Card details (simplified for demo)
     card_last_four = db.Column(db.String(4))
     card_type = db.Column(db.String(20))
+    bank_account_id = db.Column(db.String(36), index=True)  # Reference to customer's bank account
     
     # Timestamps
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
@@ -66,10 +67,12 @@ class Payment(db.Model):
             'description': self.description,
             'card_last_four': self.card_last_four,
             'card_type': self.card_type,
+            'bank_account_id': self.bank_account_id,  # Add this line
             'created_at': self.created_at.isoformat(),
             'updated_at': self.updated_at.isoformat(),
             'processed_at': self.processed_at.isoformat() if self.processed_at else None
         }
+        
 
 class Refund(db.Model):
     __tablename__ = 'refunds'

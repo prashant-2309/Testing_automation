@@ -13,6 +13,7 @@ load_dotenv()
 import pymysql
 from src.payment_service.api import create_app
 from src.models.payment_models import db
+from src.models.banking_models import *
 
 def create_database_if_not_exists():
     """Create database if it doesn't exist"""

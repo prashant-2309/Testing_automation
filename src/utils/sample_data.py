@@ -24,12 +24,19 @@ class SampleDataGenerator:
             'MERCHANT_001', 'MERCHANT_002', 'MERCHANT_003', 
             'MERCHANT_004', 'MERCHANT_005'
         ]
-        self.customers = [
-            'CUSTOMER_001', 'CUSTOMER_002', 'CUSTOMER_003', 
-            'CUSTOMER_004', 'CUSTOMER_005', 'CUSTOMER_006',
-            'CUSTOMER_007', 'CUSTOMER_008', 'CUSTOMER_009', 
-            'CUSTOMER_010'
+        
+        # Regular customers with numbered IDs
+        self.regular_customers = [f'CUSTOMER_{i:03d}' for i in range(1, 21)]
+        
+        # Special test customers
+        self.special_customers = [
+            'CUSTOMER_VIP', 'CUSTOMER_EDGE', 'CUSTOMER_GLOBAL',
+            'CUSTOMER_USD', 'CUSTOMER_EUR', 'CUSTOMER_GBP', 
+            'CUSTOMER_JPY', 'CUSTOMER_CAD'
         ]
+        
+        self.all_customers = self.regular_customers + self.special_customers
+        
         self.currencies = ['USD', 'EUR', 'GBP', 'JPY', 'CAD']
         self.payment_methods = ['credit_card', 'debit_card', 'bank_transfer', 'digital_wallet']
         self.card_types = ['VISA', 'MASTERCARD', 'AMEX', 'DISCOVER']
@@ -39,45 +46,17 @@ class SampleDataGenerator:
             'Annual membership', 'Digital service', 'Consulting fee',
             'Software license'
         ]
-
-    def generate_card_details(self):
-        """Generate random card details"""
-        return {
-            'card_last_four': f"{random.randint(1000, 9999)}",
-            'card_type': random.choice(self.card_types)
-        }
-
-    def generate_amount(self, currency='USD'):
-        """Generate realistic payment amounts based on currency"""
-        if currency == 'JPY':
-            # JPY doesn't use decimals
-            return random.randint(100, 50000)
-        elif currency in ['USD', 'EUR', 'GBP', 'CAD']:
-            # Standard decimal currencies
-            amounts = [9.99, 19.99, 29.99, 49.99, 99.99, 149.99, 199.99, 299.99, 499.99, 999.99]
-            return random.choice(amounts) + random.uniform(0, 50)
-        else:
-            return random.uniform(10, 1000)
-
-    def create_payment_data(self):
-        """Generate a single payment data object"""
-        currency = random.choice(self.currencies)
-        payment_method = random.choice(self.payment_methods)
         
-        payment_data = {
-            'merchant_id': random.choice(self.merchants),
-            'customer_id': random.choice(self.customers),
-            'amount': round(self.generate_amount(currency), 2),
-            'currency': currency,
-            'payment_method': payment_method,
-            'description': random.choice(self.descriptions)
+        # Bank configuration
+        self.banks = {
+            'WF': 'Wells Fargo Bank',
+            'BOA': 'Bank of America', 
+            'CITI': 'Citibank',
+            'CHASE': 'JPMorgan Chase',
+            'USB': 'US Bank'
         }
         
-        # Add card details for card payments
-        if payment_method in ['credit_card', 'debit_card']:
-            payment_data.update(self.generate_card_details())
-        
-        return payment_data
+        self.account_types = ['checking', 'savings']
 
     def test_api_connection(self):
         """Test if API is accessible"""
@@ -102,21 +81,153 @@ class SampleDataGenerator:
             print(f"  3. Try: curl http://localhost:5000/health")
             return False
 
-    def create_payment(self, payment_data):
-        """Create a single payment via API"""
+    def generate_initial_balance(self, currency):
+        """Generate appropriate initial balance for currency"""
+        if currency == 'JPY':
+            return random.randint(100000, 1000000)  # 100k to 1M JPY
+        else:
+            return round(random.uniform(2000, 20000), 2)
+
+    def generate_daily_limit(self, currency):
+        """Generate appropriate daily limit for currency"""
+        if currency == 'JPY':
+            return random.choice([200000, 500000, 1000000, 2000000])
+        else:
+            return random.choice([2000, 5000, 10000, 25000])
+
+    def generate_payment_amount(self, currency='USD'):
+        """Generate realistic payment amounts based on currency"""
+        if currency == 'JPY':
+            # JPY doesn't use decimals, reasonable amounts under 10k limit
+            amounts = [100, 500, 1000, 1500, 2000, 3000, 5000, 7500, 9000, 9999]
+            return random.choice(amounts)
+        elif currency in ['USD', 'EUR', 'GBP', 'CAD']:
+            # Standard decimal currencies - keep under 10k limit
+            base_amounts = [9.99, 19.99, 29.99, 49.99, 99.99, 149.99, 199.99, 299.99, 499.99, 999.99]
+            return round(random.choice(base_amounts) + random.uniform(0, 500), 2)
+        else:
+            return round(random.uniform(10, 1000), 2)
+
+    def generate_card_details(self):
+        """Generate random card details"""
+        return {
+            'card_last_four': f"{random.randint(1000, 9999)}",
+            'card_type': random.choice(self.card_types)
+        }
+
+    def create_bank_account_via_api(self, account_data):
+        """Create bank account via API"""
+        try:
+            response = requests.post(f"{API_BASE}/banking/accounts", json=account_data, timeout=10)
+            if response.status_code == 201:
+                return response.json()['account']
+            else:
+                print(f"  ✗ Failed to create account: {response.status_code} - {response.text[:100]}")
+                return None
+        except Exception as e:
+            print(f"  ✗ Error creating account: {e}")
+            return None
+
+    def create_comprehensive_bank_accounts(self, num_regular_accounts=30):
+        """Create comprehensive bank accounts for all customers"""
+        print("\nCreating comprehensive bank accounts...")
+        created_accounts = []
+        
+        # Create accounts for regular customers (multiple currencies each)
+        print("Creating accounts for regular customers...")
+        for i, customer_id in enumerate(self.regular_customers[:10]):  # First 10 customers
+            print(f"Creating accounts for {customer_id}")
+            
+            # Primary currencies for each customer
+            if i < 3:
+                # First 3 customers: USD + EUR + JPY
+                currencies = ['USD', 'EUR', 'JPY']
+            elif i < 6:
+                # Next 3 customers: USD + GBP + CAD  
+                currencies = ['USD', 'GBP', 'CAD']
+            elif i < 8:
+                # Next 2 customers: EUR + GBP
+                currencies = ['EUR', 'GBP']
+            else:
+                # Last 2 customers: USD + EUR
+                currencies = ['USD', 'EUR']
+            
+            for currency in currencies:
+                account_data = {
+                    'customer_id': customer_id,
+                    'bank_code': random.choice(list(self.banks.keys())),
+                    'account_type': random.choice(self.account_types),
+                    'currency': currency,
+                    'initial_balance': self.generate_initial_balance(currency),
+                    'daily_limit': self.generate_daily_limit(currency),
+                    'overdraft_limit': random.choice([0, 500, 1000, 2000])
+                }
+                
+                account = self.create_bank_account_via_api(account_data)
+                if account:
+                    created_accounts.append(account)
+                    print(f"  ✓ Created {currency} account: {account['account_number']}")
+        
+        # Create accounts for special test customers
+        print("\nCreating accounts for special test customers...")
+        special_account_configs = {
+            'CUSTOMER_VIP': ['USD', 'EUR', 'GBP'],
+            'CUSTOMER_EDGE': ['USD'],
+            'CUSTOMER_GLOBAL': ['USD', 'EUR', 'GBP', 'JPY', 'CAD'],
+            'CUSTOMER_USD': ['USD'],
+            'CUSTOMER_EUR': ['EUR'], 
+            'CUSTOMER_GBP': ['GBP'],
+            'CUSTOMER_JPY': ['JPY'],
+            'CUSTOMER_CAD': ['CAD']
+        }
+        
+        for customer_id, currencies in special_account_configs.items():
+            print(f"Creating accounts for {customer_id}")
+            for currency in currencies:
+                account_data = {
+                    'customer_id': customer_id,
+                    'bank_code': random.choice(list(self.banks.keys())),
+                    'account_type': 'checking',
+                    'currency': currency,
+                    'initial_balance': self.generate_initial_balance(currency),
+                    'daily_limit': self.generate_daily_limit(currency),
+                    'overdraft_limit': 2000  # Higher limits for special customers
+                }
+                
+                account = self.create_bank_account_via_api(account_data)
+                if account:
+                    created_accounts.append(account)
+                    print(f"  ✓ Created {currency} account: {account['account_number']}")
+        
+        print(f"\n✓ Created {len(created_accounts)} bank accounts total")
+        return created_accounts
+
+    def get_customer_accounts_by_currency(self, customer_id):
+        """Get all currencies this customer has accounts for"""
+        try:
+            response = requests.get(f"{API_BASE}/banking/customers/{customer_id}/accounts", timeout=10)
+            if response.status_code == 200:
+                accounts = response.json()['accounts']
+                return {acc['currency']: acc['id'] for acc in accounts if acc['status'] == 'active'}
+            return {}
+        except:
+            return {}
+
+    def create_payment_via_api(self, payment_data):
+        """Create payment via API"""
         try:
             response = requests.post(f"{API_BASE}/payments", json=payment_data, timeout=10)
             if response.status_code == 201:
                 return response.json()
             else:
-                print(f"Failed to create payment: {response.status_code} - {response.text}")
+                print(f"Failed to create payment: {response.status_code} - {response.text[:200]}")
                 return None
         except requests.exceptions.RequestException as e:
             print(f"Error creating payment: {e}")
             return None
 
-    def process_payment(self, payment_id):
-        """Process a payment"""
+    def process_payment_via_api(self, payment_id):
+        """Process payment via API"""
         try:
             response = requests.post(f"{API_BASE}/payments/{payment_id}/process", timeout=10)
             if response.status_code == 200:
@@ -128,8 +239,8 @@ class SampleDataGenerator:
             print(f"Error processing payment {payment_id}: {e}")
             return None
 
-    def create_refund(self, payment_id, refund_amount, reason="Customer request"):
-        """Create a refund for a payment"""
+    def create_refund_via_api(self, payment_id, refund_amount, reason="Customer request"):
+        """Create refund via API"""
         try:
             refund_data = {
                 'amount': refund_amount,
@@ -145,26 +256,48 @@ class SampleDataGenerator:
             print(f"Error creating refund for {payment_id}: {e}")
             return None
 
-    def generate_sample_data(self, num_payments=20):
-        """Generate comprehensive sample data"""
-        if not self.test_api_connection():
-            return {
-                'created': [],
-                'processed': [],
-                'refunded': []
-            }
+    def create_payment_data(self):
+        """Generate a single payment data object with currency matching"""
+        customer_id = random.choice(self.regular_customers[:10])  # Use customers with accounts
+        
+        # Get available currencies for this customer
+        customer_currencies = self.get_customer_accounts_by_currency(customer_id)
+        
+        if not customer_currencies:
+            # Fallback to USD if no accounts found
+            currency = 'USD'
+        else:
+            currency = random.choice(list(customer_currencies.keys()))
+        
+        payment_method = random.choice(self.payment_methods)
+        
+        payment_data = {
+            'merchant_id': random.choice(self.merchants),
+            'customer_id': customer_id,
+            'amount': self.generate_payment_amount(currency),
+            'currency': currency,
+            'payment_method': payment_method,
+            'description': random.choice(self.descriptions)
+        }
+        
+        # Add card details for card payments
+        if payment_method in ['credit_card', 'debit_card']:
+            payment_data.update(self.generate_card_details())
+        
+        return payment_data
 
+    def generate_sample_payments(self, num_payments=30):
+        """Generate comprehensive sample payments"""
         print(f"\nGenerating {num_payments} sample payments...")
         created_payments = []
         processed_payments = []
         refunded_payments = []
-
-        # Create payments
+        
         for i in range(num_payments):
             payment_data = self.create_payment_data()
-            print(f"Creating payment {i+1}/{num_payments}: {payment_data['amount']} {payment_data['currency']}")
+            print(f"Creating payment {i+1}/{num_payments}: {payment_data['amount']} {payment_data['currency']} for {payment_data['customer_id']}")
             
-            result = self.create_payment(payment_data)
+            result = self.create_payment_via_api(payment_data)
             if result and result.get('success'):
                 payment = result['payment']
                 created_payments.append(payment)
@@ -172,8 +305,8 @@ class SampleDataGenerator:
                 
                 # Process 80% of payments
                 if random.random() > 0.2:
-                    time.sleep(0.1)  # Small delay to simulate real-world timing
-                    process_result = self.process_payment(payment['id'])
+                    time.sleep(0.1)  # Small delay
+                    process_result = self.process_payment_via_api(payment['id'])
                     if process_result and process_result.get('success'):
                         processed_payment = process_result['payment']
                         processed_payments.append(processed_payment)
@@ -183,21 +316,26 @@ class SampleDataGenerator:
                         if processed_payment['status'] == 'completed' and random.random() > 0.8:
                             time.sleep(0.1)
                             refund_amount = round(float(processed_payment['amount']) * random.uniform(0.3, 1.0), 2)
+                            
+                            # Adjust refund amount for JPY (no decimals)
+                            if processed_payment['currency'] == 'JPY':
+                                refund_amount = int(refund_amount)
+                            
                             refund_reasons = [
                                 "Customer request", "Product defect", "Service issue", 
                                 "Billing error", "Duplicate charge", "Cancelled order"
                             ]
-                            refund_result = self.create_refund(
+                            refund_result = self.create_refund_via_api(
                                 payment['id'], 
                                 refund_amount, 
                                 random.choice(refund_reasons)
                             )
                             if refund_result and refund_result.get('success'):
                                 refunded_payments.append(refund_result['refund'])
-                                print(f"  ✓ Created refund: {refund_amount} for payment {payment['id']}")
+                                print(f"  ✓ Created refund: {refund_amount} {processed_payment['currency']} for payment {payment['id']}")
             else:
                 print(f"  ✗ Failed to create payment")
-
+        
         return {
             'created': created_payments,
             'processed': processed_payments,
@@ -209,68 +347,138 @@ class SampleDataGenerator:
         print("\nCreating specific test scenarios...")
         scenarios = []
 
-        # Only proceed if API is accessible
-        health_url = API_BASE.replace('/api/v1', '/health')
-        try:
-            response = requests.get(health_url, timeout=5)
-            if response.status_code != 200:
-                print("API not accessible, skipping scenarios")
-                return []
-        except:
-            print("API not accessible, skipping scenarios")
-            return []
-
-        # Scenario 1: Large payment
-        large_payment = {
-            'merchant_id': 'MERCHANT_001',
-            'customer_id': 'CUSTOMER_VIP',
-            'amount': 5000.00,
-            'currency': 'USD',
-            'payment_method': 'bank_transfer',
-            'description': 'Large corporate payment'
-        }
-        scenarios.append(('Large Payment', large_payment))
-
-        # Scenario 2: Multi-currency payments
-        currencies = ['USD', 'EUR', 'GBP', 'JPY']
-        for currency in currencies:
-            payment = {
-                'merchant_id': 'MERCHANT_GLOBAL',
-                'customer_id': f'CUSTOMER_{currency}',
-                'amount': self.generate_amount(currency),
-                'currency': currency,
-                'payment_method': 'credit_card',
-                'description': f'Multi-currency test - {currency}',
-                **self.generate_card_details()
+        # Test scenarios with proper amounts and existing customers
+        test_scenarios = [
+            {
+                'name': 'Large USD Payment',
+                'data': {
+                    'merchant_id': 'MERCHANT_001',
+                    'customer_id': 'CUSTOMER_VIP',
+                    'amount': 9500.00,
+                    'currency': 'USD',
+                    'payment_method': 'bank_transfer',
+                    'description': 'Large corporate payment'
+                }
+            },
+            {
+                'name': 'EUR Payment',
+                'data': {
+                    'merchant_id': 'MERCHANT_GLOBAL',
+                    'customer_id': 'CUSTOMER_EUR',
+                    'amount': 500.00,
+                    'currency': 'EUR',
+                    'payment_method': 'credit_card',
+                    'description': 'EUR test payment',
+                    **self.generate_card_details()
+                }
+            },
+            {
+                'name': 'GBP Payment',
+                'data': {
+                    'merchant_id': 'MERCHANT_GLOBAL',
+                    'customer_id': 'CUSTOMER_GBP',
+                    'amount': 750.00,
+                    'currency': 'GBP',
+                    'payment_method': 'debit_card',
+                    'description': 'GBP test payment',
+                    **self.generate_card_details()
+                }
+            },
+            {
+                'name': 'JPY Payment',
+                'data': {
+                    'merchant_id': 'MERCHANT_GLOBAL',
+                    'customer_id': 'CUSTOMER_JPY',
+                    'amount': 9000,  # Under 10k limit
+                    'currency': 'JPY',
+                    'payment_method': 'digital_wallet',
+                    'description': 'JPY test payment'
+                }
+            },
+            {
+                'name': 'CAD Payment',
+                'data': {
+                    'merchant_id': 'MERCHANT_GLOBAL',
+                    'customer_id': 'CUSTOMER_CAD',
+                    'amount': 300.00,
+                    'currency': 'CAD',
+                    'payment_method': 'credit_card',
+                    'description': 'CAD test payment',
+                    **self.generate_card_details()
+                }
             }
-            scenarios.append((f'{currency} Payment', payment))
+        ]
 
-        # Scenario 3: Edge case amounts
-        edge_amounts = [0.01, 0.99, 1.00, 999.99, 9999.99]
-        for amount in edge_amounts:
-            payment = {
-                'merchant_id': 'MERCHANT_EDGE',
-                'customer_id': 'CUSTOMER_EDGE',
-                'amount': amount,
-                'currency': 'USD',
-                'payment_method': 'credit_card',
-                'description': f'Edge case amount: {amount}',
-                **self.generate_card_details()
-            }
-            scenarios.append((f'Edge Amount ${amount}', payment))
+        # Edge case amounts
+        edge_cases = [
+            {'amount': 0.01, 'desc': 'Minimum amount'},
+            {'amount': 1.00, 'desc': 'One dollar'},
+            {'amount': 999.99, 'desc': 'Under 1000'},
+            {'amount': 5000.00, 'desc': 'Mid-range amount'},
+            {'amount': 9999.99, 'desc': 'Maximum amount'}
+        ]
+
+        for edge in edge_cases:
+            test_scenarios.append({
+                'name': f'Edge Case - {edge["desc"]}',
+                'data': {
+                    'merchant_id': 'MERCHANT_EDGE',
+                    'customer_id': 'CUSTOMER_EDGE',
+                    'amount': edge['amount'],
+                    'currency': 'USD',
+                    'payment_method': 'credit_card',
+                    'description': f'Edge case: {edge["desc"]}',
+                    **self.generate_card_details()
+                }
+            })
 
         # Execute scenarios
         scenario_results = []
-        for scenario_name, payment_data in scenarios:
-            print(f"Creating scenario: {scenario_name}")
-            result = self.create_payment(payment_data)
+        for scenario in test_scenarios:
+            print(f"Creating scenario: {scenario['name']}")
+            result = self.create_payment_via_api(scenario['data'])
             if result and result.get('success'):
-                scenario_results.append((scenario_name, result['payment']))
+                scenario_results.append((scenario['name'], result['payment']))
                 print(f"  ✓ Created: {result['payment']['id']}")
             else:
-                print(f"  ✗ Failed to create scenario: {scenario_name}")
+                print(f"  ✗ Failed to create scenario: {scenario['name']}")
 
         return scenario_results
+
+    def create_banking_test_scenarios(self):
+        """Create specific banking test scenarios"""
+        print("\nCreating banking test scenarios...")
+        
+        # Test insufficient funds
+        print("Testing insufficient funds scenario...")
+        try:
+            # Create a payment that should exceed available balance
+            large_payment = {
+                'merchant_id': 'MERCHANT_001',
+                'customer_id': 'CUSTOMER_001',
+                'amount': 50000.00,  # Very large amount
+                'currency': 'USD',
+                'payment_method': 'bank_transfer',
+                'description': 'Insufficient funds test'
+            }
+            
+            result = self.create_payment_via_api(large_payment)
+            if result and result.get('success'):
+                payment_id = result['payment']['id']
+                print(f"  ✓ Created large payment: {payment_id}")
+                
+                # Try to process it (should fail due to insufficient funds)
+                process_result = self.process_payment_via_api(payment_id)
+                if process_result:
+                    status = process_result['payment']['status']
+                    print(f"  ✓ Processing result: {status}")
+                    if status == 'failed':
+                        print("  ✓ Insufficient funds test passed - payment failed as expected")
+                    else:
+                        print("  ⚠ Insufficient funds test unexpected result")
+            
+        except Exception as e:
+            print(f"  ✗ Banking test scenario error: {e}")
 
     def print_summary(self, results):
         """Print summary of created data"""
@@ -311,38 +519,55 @@ class SampleDataGenerator:
         health_url = API_BASE.replace('/api/v1', '/health')
         print(f"  Health Check: {health_url}")
         print(f"  List Payments: {API_BASE}/payments")
-        print(f"  Payment Details: {API_BASE}/payments/{{payment_id}}")
-        print(f"  Payment Transactions: {API_BASE}/payments/{{payment_id}}/transactions")
-
+        print(f"  Banking Customers: {API_BASE}/banking/customers/{{customer_id}}/accounts")
+        print(f"  Account Balance: {API_BASE}/banking/accounts/{{account_id}}/balance")
+        print(f"  Account Transactions: {API_BASE}/banking/accounts/{{account_id}}/transactions")
 
 def main():
-    """Main function to generate sample data"""
+    """Main function to generate comprehensive sample data"""
     print("Payment System Sample Data Generator")
     print("=" * 50)
     
     generator = SampleDataGenerator()
     
-    # Generate main sample data
-    results = generator.generate_sample_data(num_payments=25)
+    # Test API connection first
+    if not generator.test_api_connection():
+        print("\n❌ Cannot connect to API. Please start the server first.")
+        return
+    
+    # Create comprehensive bank accounts
+    bank_accounts = generator.create_comprehensive_bank_accounts()
+    
+    # Wait a moment for accounts to be fully created
+    time.sleep(1)
+    
+    # Generate main sample payments
+    results = generator.generate_sample_payments(num_payments=40)
     
     # Create specific test scenarios
     scenarios = generator.create_specific_test_scenarios()
     
-    # Print summary
+    # Create banking test scenarios
+    generator.create_banking_test_scenarios()
+    
+    # Print comprehensive summary
     generator.print_summary(results)
     
-    print(f"\nScenario Results: {len(scenarios)} scenarios created")
+    print(f"\nBank Accounts Created: {len(bank_accounts)}")
+    print(f"Test Scenarios Created: {len(scenarios)}")
     
-    if results['created']:
-        print("\n✓ Sample data generation complete!")
-        print("\nYou can now test the API endpoints or run the test suite.")
+    if results['created'] or bank_accounts:
+        print("\n🎉 Sample data generation complete!")
+        print("\nNext steps:")
+        print("1. Test payments: curl http://localhost:5000/api/v1/payments")
+        print("2. Check bank accounts: curl http://localhost:5000/api/v1/banking/customers/CUSTOMER_001/accounts")
+        print("3. Run test suite: pytest tests/ -v")
+        print("4. Try processing payments through the API")
     else:
-        print("\n✗ No data was created. Please check API connection.")
-        print("\nTroubleshooting steps:")
-        print("1. Make sure the server is running: python run_server.py")
-        print("2. Test manually: curl http://localhost:5000/health")
-        print("3. Check .env file for correct port configuration")
-
+        print("\n❌ No data was created. Please check:")
+        print("1. API server is running")
+        print("2. Database connection is working")
+        print("3. Banking tables exist (run update_database.py)")
 
 if __name__ == "__main__":
     main()
