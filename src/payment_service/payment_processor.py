@@ -112,9 +112,9 @@ class PaymentProcessor:
         except Exception as e:
             db.session.rollback()
             return {'success': False, 'errors': [str(e)]}
-    
+
     def process_payment(self, payment_id):
-        """Process a pending payment with bank account debit"""
+        """Process a pending payment through multi-bank network"""
         try:
             payment = Payment.query.get(payment_id)
             if not payment:
@@ -127,81 +127,104 @@ class PaymentProcessor:
             payment.status = PaymentStatus.PROCESSING
             db.session.commit()
             
-            # Simulate processing time
-            time.sleep(0.1)
+            print(f"🚀 Processing payment {payment_id} through multi-bank network")
             
-            # Try to debit the bank account if bank_account_id exists
+            # Process through payment network if bank account is linked
             if hasattr(payment, 'bank_account_id') and payment.bank_account_id:
-                debit_result = self.banking_service.debit_account(
-                    payment.bank_account_id,
-                    payment.amount,
-                    reference_id=payment.id,
-                    reference_type='payment',
-                    description=f'Payment to {payment.merchant_id}'
-                )
+                from src.banking_service.payment_network import PaymentNetworkService
                 
-                if not debit_result['success']:
-                    # Bank debit failed
+                network_service = PaymentNetworkService()
+                
+                payment_data = {
+                    'payment_id': payment.id,
+                    'amount': payment.amount,
+                    'currency': payment.currency,
+                    'bank_account_id': payment.bank_account_id,
+                    'merchant_id': payment.merchant_id
+                }
+                
+                network_result = network_service.process_two_party_transaction(payment_data)
+                
+                if network_result['success']:
+                    # Network processing succeeded
+                    payment.status = PaymentStatus.COMPLETED
+                    payment.processed_at = datetime.utcnow()
+                    
+                    # Create comprehensive transaction record
+                    transaction = Transaction(
+                        payment_id=payment.id,
+                        transaction_type='charge',
+                        amount=payment.amount,
+                        gateway_response=f"SUCCESS via {network_result['transaction_details']['issuer_bank']} → {network_result['transaction_details']['acquirer_bank']}",
+                        gateway_transaction_id=network_result.get('authorization_code', f"net_{random.randint(100000, 999999)}")
+                    )
+                    db.session.add(transaction)
+                    
+                    # Store network details in payment (if you want to extend the model)
+                    db.session.commit()
+                    
+                    result = payment.to_dict()
+                    result['network_details'] = network_result['transaction_details']
+                    
+                    return {'success': True, 'payment': result}
+                else:
+                    # Network processing failed
                     payment.status = PaymentStatus.FAILED
                     
                     transaction = Transaction(
                         payment_id=payment.id,
                         transaction_type='charge',
                         amount=payment.amount,
-                        gateway_response=f"BANK_DECLINED: {', '.join(debit_result['errors'])}",
-                        gateway_transaction_id=f"bank_fail_{random.randint(100000, 999999)}"
+                        gateway_response=f"NETWORK_DECLINED: {network_result['error']}",
+                        gateway_transaction_id=f"net_fail_{random.randint(100000, 999999)}"
                     )
                     db.session.add(transaction)
                     db.session.commit()
                     
-                    return {'success': True, 'payment': payment.to_dict()}
-            
-            # Simulate gateway processing (90% success rate)
-            success = random.random() > 0.1
-            
-            if success:
-                payment.status = PaymentStatus.COMPLETED
-                payment.processed_at = datetime.utcnow()
-                
-                transaction = Transaction(
-                    payment_id=payment.id,
-                    transaction_type='charge',
-                    amount=payment.amount,
-                    gateway_response='SUCCESS',
-                    gateway_transaction_id=f"gw_{random.randint(100000, 999999)}"
-                )
-                db.session.add(transaction)
+                    result = payment.to_dict()
+                    if network_result.get('transaction_details'):
+                        result['network_details'] = network_result['transaction_details']
+                    
+                    return {'success': True, 'payment': result}
             else:
-                payment.status = PaymentStatus.FAILED
+                # Fallback to old processing logic
+                time.sleep(0.1)
+                success = random.random() > 0.1
                 
-                # If we debited the bank account, we need to credit it back
-                if hasattr(payment, 'bank_account_id') and payment.bank_account_id:
-                    self.banking_service.credit_account(
-                        payment.bank_account_id,
-                        payment.amount,
-                        reference_id=payment.id,
-                        reference_type='reversal',
-                        description=f'Payment reversal for failed transaction {payment.id}'
+                if success:
+                    payment.status = PaymentStatus.COMPLETED
+                    payment.processed_at = datetime.utcnow()
+                    
+                    transaction = Transaction(
+                        payment_id=payment.id,
+                        transaction_type='charge',
+                        amount=payment.amount,
+                        gateway_response='SUCCESS (fallback)',
+                        gateway_transaction_id=f"fallback_{random.randint(100000, 999999)}"
                     )
+                    db.session.add(transaction)
+                else:
+                    payment.status = PaymentStatus.FAILED
+                    
+                    transaction = Transaction(
+                        payment_id=payment.id,
+                        transaction_type='charge',
+                        amount=payment.amount,
+                        gateway_response='DECLINED (fallback)',
+                        gateway_transaction_id=f"fallback_fail_{random.randint(100000, 999999)}"
+                    )
+                    db.session.add(transaction)
                 
-                transaction = Transaction(
-                    payment_id=payment.id,
-                    transaction_type='charge',
-                    amount=payment.amount,
-                    gateway_response='GATEWAY_DECLINED',
-                    gateway_transaction_id=f"gw_fail_{random.randint(100000, 999999)}"
-                )
-                db.session.add(transaction)
+                db.session.commit()
+                return {'success': True, 'payment': payment.to_dict()}
             
-            db.session.commit()
-            return {'success': True, 'payment': payment.to_dict()}
-        
         except SQLAlchemyError as e:
             db.session.rollback()
             return {'success': False, 'errors': [f'Database error: {str(e)}']}
         except Exception as e:
             db.session.rollback()
             return {'success': False, 'errors': [str(e)]}
+    
     
     def refund_payment(self, payment_id, refund_data):
         """Process a refund for a payment with bank account credit"""

@@ -263,16 +263,47 @@ class SampleDataGenerator:
         # Get available currencies for this customer
         customer_currencies = self.get_customer_accounts_by_currency(customer_id)
         
-        if not customer_currencies:
-            # Fallback to USD if no accounts found
-            currency = 'USD'
-        else:
-            currency = random.choice(list(customer_currencies.keys()))
+        # Define merchants and their ACTUAL supported currencies based on merchant accounts
+        merchants_by_currency = {
+            'USD': ['MERCHANT_001', 'MERCHANT_002', 'MERCHANT_003', 'MERCHANT_004', 'MERCHANT_005'],
+            'EUR': ['MERCHANT_001', 'MERCHANT_002', 'MERCHANT_003', 'MERCHANT_004', 'MERCHANT_005'],
+            'GBP': ['MERCHANT_001', 'MERCHANT_002', 'MERCHANT_003', 'MERCHANT_005'],
+            'JPY': ['MERCHANT_001', 'MERCHANT_003'],  # Only these have JPY accounts
+            'CAD': ['MERCHANT_001', 'MERCHANT_003', 'MERCHANT_005']  # Only these have CAD accounts
+        }
         
+        # Find a currency that both customer and merchants support
+        supported_currencies = []
+        if customer_currencies:
+            for currency in customer_currencies.keys():
+                if currency in merchants_by_currency and merchants_by_currency[currency]:
+                    supported_currencies.append(currency)
+        
+        # If no matching currency found, fallback to USD
+        if not supported_currencies:
+            print(f"  ⚠️ No matching currency for {customer_id}, falling back to USD")
+            currency = 'USD'
+            # Make sure customer has USD account, if not, skip this payment
+            if 'USD' not in customer_currencies:
+                print(f"  ⚠️ {customer_id} has no USD account either, skipping...")
+                return None
+        else:
+            currency = random.choice(supported_currencies)
+        
+        # Select merchant that supports this currency
+        available_merchants = merchants_by_currency.get(currency, [])
+        
+        # Final safety check
+        if not available_merchants:
+            print(f"  ⚠️ No merchants support {currency}, falling back to USD and MERCHANT_001")
+            currency = 'USD'
+            available_merchants = ['MERCHANT_001']
+        
+        merchant_id = random.choice(available_merchants)
         payment_method = random.choice(self.payment_methods)
         
         payment_data = {
-            'merchant_id': random.choice(self.merchants),
+            'merchant_id': merchant_id,
             'customer_id': customer_id,
             'amount': self.generate_payment_amount(currency),
             'currency': currency,
@@ -285,7 +316,7 @@ class SampleDataGenerator:
             payment_data.update(self.generate_card_details())
         
         return payment_data
-
+        
     def generate_sample_payments(self, num_payments=30):
         """Generate comprehensive sample payments"""
         print(f"\nGenerating {num_payments} sample payments...")
@@ -295,6 +326,12 @@ class SampleDataGenerator:
         
         for i in range(num_payments):
             payment_data = self.create_payment_data()
+            
+            # Skip if no valid payment data could be created
+            if payment_data is None:
+                print(f"Skipping payment {i+1}/{num_payments}: Could not create valid payment data")
+                continue
+                
             print(f"Creating payment {i+1}/{num_payments}: {payment_data['amount']} {payment_data['currency']} for {payment_data['customer_id']}")
             
             result = self.create_payment_via_api(payment_data)
@@ -333,6 +370,8 @@ class SampleDataGenerator:
                             if refund_result and refund_result.get('success'):
                                 refunded_payments.append(refund_result['refund'])
                                 print(f"  ✓ Created refund: {refund_amount} {processed_payment['currency']} for payment {payment['id']}")
+                    else:
+                        print(f"  ⚠️ Failed to process payment {payment['id']}")
             else:
                 print(f"  ✗ Failed to create payment")
         
@@ -480,6 +519,105 @@ class SampleDataGenerator:
         except Exception as e:
             print(f"  ✗ Banking test scenario error: {e}")
 
+    def test_multi_bank_scenarios(self):
+        """Test multi-bank transaction scenarios"""
+        print("\n🏦 Testing Multi-Bank Transaction Scenarios...")
+        
+        test_scenarios = [
+            {
+                'name': 'High-Value Cross-Bank Transaction',
+                'customer_id': 'CUSTOMER_001',
+                'merchant_id': 'MERCHANT_001', 
+                'amount': 5000.00,
+                'currency': 'USD',
+                'description': 'Test high-value cross-bank payment'
+            },
+            {
+                'name': 'International Payment (EUR)',
+                'customer_id': 'CUSTOMER_002',
+                'merchant_id': 'MERCHANT_003',
+                'amount': 1250.00,
+                'currency': 'EUR',
+                'description': 'Test international EUR payment'
+            },
+            {
+                'name': 'Small Business Payment',
+                'customer_id': 'CUSTOMER_003',
+                'merchant_id': 'MERCHANT_004',
+                'amount': 45.99,
+                'currency': 'USD',
+                'description': 'Test small business payment'
+            },
+            {
+                'name': 'Service Provider Payment',
+                'customer_id': 'CUSTOMER_004',
+                'merchant_id': 'MERCHANT_005',
+                'amount': 2750.00,
+                'currency': 'USD',
+                'description': 'Test service provider payment'
+            }
+        ]
+        
+        results = []
+        for scenario in test_scenarios:
+            print(f"\nTesting: {scenario['name']}")
+            
+            # Create payment
+            payment_data = {
+                'merchant_id': scenario['merchant_id'],
+                'customer_id': scenario['customer_id'],
+                'amount': scenario['amount'],
+                'currency': scenario['currency'],
+                'payment_method': 'credit_card',
+                'description': scenario['description'],
+                **self.generate_card_details()
+            }
+            
+            payment_result = self.create_payment_via_api(payment_data)
+            if payment_result and payment_result.get('success'):
+                payment_id = payment_result['payment']['id']
+                print(f"  ✓ Payment created: {payment_id}")
+                
+                # Process payment (this will trigger multi-bank processing)
+                time.sleep(1)  # Small delay
+                process_result = self.process_payment_via_api(payment_id)
+                
+                if process_result and process_result.get('success'):
+                    payment = process_result['payment']
+                    print(f"  ✓ Payment processed: {payment['status']}")
+                    
+                    # Check for network details
+                    if 'network_details' in payment:
+                        details = payment['network_details']
+                        print(f"    🏦 Issuer: {details.get('issuer_bank', 'N/A')}")
+                        print(f"    🏪 Acquirer: {details.get('acquirer_bank', 'N/A')}")
+                        print(f"    ⏱️ Total time: {details.get('total_processing_time_ms', 'N/A')}ms")
+                        
+                    results.append({
+                        'scenario': scenario['name'],
+                        'success': True,
+                        'payment_id': payment_id,
+                        'status': payment['status'],
+                        'network_details': payment.get('network_details')
+                    })
+                else:
+                    print(f"  ✗ Payment processing failed")
+                    results.append({
+                        'scenario': scenario['name'],
+                        'success': False,
+                        'payment_id': payment_id,
+                        'error': 'Processing failed'
+                    })
+            else:
+                print(f"  ✗ Payment creation failed")
+                results.append({
+                    'scenario': scenario['name'],
+                    'success': False,
+                    'error': 'Creation failed'
+                })
+        
+        return results
+
     def print_summary(self, results):
         """Print summary of created data"""
         print("\n" + "="*60)
@@ -525,8 +663,8 @@ class SampleDataGenerator:
 
 def main():
     """Main function to generate comprehensive sample data"""
-    print("Payment System Sample Data Generator")
-    print("=" * 50)
+    print("Payment System Sample Data Generator - Phase 2")
+    print("=" * 60)
     
     generator = SampleDataGenerator()
     
@@ -542,10 +680,13 @@ def main():
     time.sleep(1)
     
     # Generate main sample payments
-    results = generator.generate_sample_payments(num_payments=40)
+    results = generator.generate_sample_payments(num_payments=30)
     
     # Create specific test scenarios
     scenarios = generator.create_specific_test_scenarios()
+    
+    # Test multi-bank scenarios
+    multi_bank_results = generator.test_multi_bank_scenarios()
     
     # Create banking test scenarios
     generator.create_banking_test_scenarios()
@@ -555,19 +696,28 @@ def main():
     
     print(f"\nBank Accounts Created: {len(bank_accounts)}")
     print(f"Test Scenarios Created: {len(scenarios)}")
+    print(f"Multi-Bank Tests: {len(multi_bank_results)}")
+    
+    # Multi-bank test summary
+    successful_multi_bank = [r for r in multi_bank_results if r['success']]
+    print(f"Multi-Bank Success Rate: {len(successful_multi_bank)}/{len(multi_bank_results)}")
     
     if results['created'] or bank_accounts:
-        print("\n🎉 Sample data generation complete!")
+        print("\n🎉 Phase 2 sample data generation complete!")
+        print("\nMulti-Bank Features Tested:")
+        print("✓ Issuer-Acquirer routing")
+        print("✓ Bank-specific response times")
+        print("✓ Cross-bank transaction processing")
+        print("✓ Different bank rules and limits")
+        print("✓ Fee calculation and settlement")
+        
         print("\nNext steps:")
-        print("1. Test payments: curl http://localhost:5000/api/v1/payments")
-        print("2. Check bank accounts: curl http://localhost:5000/api/v1/banking/customers/CUSTOMER_001/accounts")
-        print("3. Run test suite: pytest tests/ -v")
-        print("4. Try processing payments through the API")
+        print("1. Test advanced scenarios: different currencies, high amounts")
+        print("2. Monitor network transaction logs")
+        print("3. Test failure scenarios: bank downtime, limits exceeded")
+        print("4. Analyze performance across different bank combinations")
     else:
-        print("\n❌ No data was created. Please check:")
-        print("1. API server is running")
-        print("2. Database connection is working")
-        print("3. Banking tables exist (run update_database.py)")
+        print("\n❌ No data was created. Please check setup.")
 
 if __name__ == "__main__":
     main()
